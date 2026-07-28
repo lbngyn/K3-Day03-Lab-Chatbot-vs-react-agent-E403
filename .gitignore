@@ -5,3 +5,11 @@ __pycache__/
 .venv/
 env/
 venv/
+
+# Node.js / React UI
+node_modules/
+**/node_modules/
+dist/
+ui/dist/
+.DS_Store
+*.log
