@@ -5,8 +5,11 @@ Nơi khai báo tất cả các "món đồ nghề" mà ReAct Agent có thể g�
 
 import asyncio
 import json
+<<<<<<< HEAD
 import re
 import requests
+=======
+>>>>>>> b9286b5 (feat: implement book_houses tool with schedule conflict checks)
 from typing import Any
 from urllib.parse import urlparse, parse_qs, quote
 
@@ -553,12 +556,67 @@ def contact_sales(
     # Trả về thông báo thành công ngắn gọn cho người dùng và Agent
     return f"Đã gửi yêu cầu đặt lịch hẹn xem nhà '{house_title}' vào lúc {appointment_date} thành công đến chuyên viên tư vấn bất động sản!"
 
-# Danh sách các tool được đăng ký để Agent sử dụng
+import os
+
+def book_houses(name: str, phone: str, house_title: str, appointment_date: str) -> str:
+    """
+    Đặt lịch hẹn xem nhà và kiểm tra xem khung giờ yêu cầu có bị trùng lặp (kẹt lịch) hay không.
+    
+    Args:
+        name (str): Họ tên của khách hàng.
+        phone (str): Số điện thoại của khách hàng.
+        house_title (str): Tên hoặc tiêu đề bất động sản khách hàng muốn xem.
+        appointment_date (str): Khung giờ hẹn xem nhà (ví dụ: '14:00 ngày 30/07/2026').
+    """
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bookings.json")
+    
+    # Một số lịch bận sẵn có để kiểm thử việc kẹt lịch
+    default_bookings = [
+        {"time": "14:00 ngày 30/07/2026", "house": "Căn hộ Vạn Hạnh Mall"},
+        {"time": "09:00 ngày 31/07/2026", "house": "Nhà phố Cầu Giấy"}
+    ]
+    
+    # Đọc dữ liệu từ file JSON cơ sở dữ liệu lịch hẹn
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                bookings = json.load(f)
+        except Exception:
+            bookings = default_bookings
+    else:
+        bookings = default_bookings
+        
+    requested_time = appointment_date.strip().lower()
+    
+    # Kiểm tra xem có bị kẹt lịch với ai trước đó không
+    for b in bookings:
+        if b.get("time", "").strip().lower() == requested_time:
+            return (
+                f"LỖI: Rất tiếc, khung giờ '{appointment_date}' đã được đặt trước bởi khách hàng khác "
+                f"để xem căn '{b.get('house')}'. Vui lòng đề xuất khung giờ rảnh khác!"
+            )
+            
+    # Lưu lịch mới vào cơ sở dữ liệu nếu trống lịch
+    new_booking = {
+        "name": name,
+        "phone": phone,
+        "house": house_title,
+        "time": appointment_date
+    }
+    bookings.append(new_booking)
+    
+    try:
+        with open(db_path, "w", encoding="utf-8") as f:
+            json.dump(bookings, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        return f"LỖI: Gặp lỗi khi lưu lịch hẹn xem nhà: {str(e)}"
+        
+    return f"ĐỒNG Ý: Đặt lịch xem nhà thành công cho căn '{house_title}' vào lúc {appointment_date} cho {name} ({phone})!"
 AVAILABLE_TOOLS = {
     "crawl_web": crawl_web,
     "find_houses": find_houses,
     "rerank_houses": rerank_houses,
     "rerank": rerank_houses,
-    "rerank_houses": rerank_houses,
     "contact_sales": contact_sales,
+    "book_houses": book_houses
 }
