@@ -1,49 +1,48 @@
-%% Hybrid Flowchart cho UI React Agent Dashboard
-%% Khop voi ui/src/utils/reactAgentSimulator.js va ui/src/data/toolsRegistry.js
+%% Hybrid Flowchart - Chatbot Baseline vs ReAct Agent
+%% Dong bo voi src/app.py, src/prompts.py va src/tools.py
 
 flowchart TD
-    A["User Query"] --> B{"Mode / Intent"}
+    A["User Query"] --> B{"Chon che do / Intent"}
 
-    %% Chatbot Baseline: phan hoi sach, khong goi tool
-    B -->|"Baseline mode / cau hoi don gian"| C["CHATBOT BASELINE"]
-    C --> D["processQuery(query, baseline)"]
-    D --> E["Tra loi kien thuc tong quat"]
-    E --> Z["Final Response"]
-    D -.-> T["Trace Log"]
+    %% Chatbot Baseline: mot LLM call, khong goi tool
+    B -->|"Baseline / kien thuc chung"| C["CHATBOT BASELINE"]
+    C --> D["CHATBOT_BASELINE_PROMPT"]
+    D --> E["Provider.generate()"]
+    E --> F["Final Response"]
+    F --> T["Trace / Observability"]
 
-    %% ReAct Agent: phan tich yeu cau va chon tool tu registry
-    B -->|"ReAct mode / cau hoi can tool"| F["REACT AGENT"]
-    F --> G{"Loai yeu cau"}
+    %% ReAct Agent loop
+    B -->|"ReAct / can du lieu thuc te hoac action"| R["REACT AGENT"]
+    R --> H["Load conversation memory"]
+    H --> I["Provider.generate(REACT_SYSTEM_PROMPT)"]
+    I --> J{"LLM output"}
 
-    subgraph Tool_Registry ["Tool Registry"]
-        H["find_houses(location, max_price)<br/>Input: khu vuc, ngan sach<br/>Output: danh sach can ho"]
-        J["rerank(properties)<br/>Input: danh sach can ho<br/>Output: top_matches"]
-        M["contact_sales(property_id, preferred_time, customer_phone)<br/>Input: can ho, thoi gian, SDT<br/>Output: booking_id, sales_contact"]
+    J -->|"Final Answer"| K["Final Answer"]
+    K --> T
+
+    J -->|"Action"| L["parse_action_call()"]
+    L --> M["execute_tool(tool_name, kwargs)"]
+
+    subgraph Tool_Registry ["AVAILABLE_TOOLS / Tool Registry"]
+        N["find_houses(transaction_type, price_min, price_max, region, area)<br/>Tim tin mua ban / cho thue"]
+        O["crawl_web(url, query)<br/>Crawl va tach du lieu web"]
+        P["rerank_houses(listings_json, preferences)<br/>Xep hang theo tieu chi"]
+        Q["contact_sales(property_id, customer_name,<br/>customer_phone, appointment_date)<br/>Dat lich xem nha"]
     end
 
-    G -->|"Tim phong / can ho"| H
-    H --> I{"Co ket qua?"}
-    I -->|"Khong"| N["Safe response: khong tim thay can ho phu hop"]
-    N --> Z
-    I -->|"Co"| J
-    J --> K["Hien thi danh sach can ho"]
-    K --> L{"Nguoi dung chon dat lich?"}
-    L -->|"Khong"| Z
-    L -->|"Co"| M
+    M --> N
+    M --> O
+    M --> P
+    M --> Q
+    N --> S["Observation"]
+    O --> S
+    P --> S
+    Q --> S
+    S --> U["Append Observation vao conversation_history"]
+    U --> V{"Con budget? step < MAX_ITERATIONS"}
+    V -->|"Con"| I
+    V -->|"Het / MAX_ITERATIONS = 4"| W["GUARDRAIL SAFE FALLBACK"]
+    W --> T
 
-    G -->|"Dat lich / xem nha"| M
-    M --> P["Booking Sidebar: luu lich hen"]
-    P --> Z
-
-    G -->|"Cau hoi khac"| Q["Tra loi chao mung / huong dan"]
-    Q --> Z
-
-    %% Quan sat va guardrail duoc hien thi trong dashboard
-    F -.-> R["Trace Log: Thought / Action / Observation"]
-    C -.-> R
-    H -.-> R
-    J -.-> R
-    M -.-> R
-    R --> S["Guardrail config: MAX_ITERATIONS = 3"]
-    S -->|"Vuot gioi han"| U["Safe Fallback"]
-    U --> Z
+    R -.-> T
+    S -.-> T
