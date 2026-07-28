@@ -3,3 +3,7 @@ openai
 anthropic
 python-dotenv
 requests
+crawl4ai
+beautifulsoup4
+fastapi
+uvicorn

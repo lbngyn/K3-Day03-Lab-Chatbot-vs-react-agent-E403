@@ -47,9 +47,10 @@ class GeminiProvider(BaseLLMProvider):
 
 
 class OpenAIProvider(BaseLLMProvider):
-    """OpenAI Provider (GPT-4o, GPT-3.5-turbo, etc.)"""
-    def __init__(self, api_key: str = None, model: str = None):
+    """OpenAI Provider (GPT-4o, GPT-3.5-turbo, Custom OpenAI-Compatible Endpoints như DeepSeek, Ollama, LM Studio, Groq...)"""
+    def __init__(self, api_key: str = None, model: str = None, base_url: str = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.model_name = model or os.getenv("LLM_MODEL") or "gpt-4o-mini"
         
     def generate(self, prompt: str, system_prompt: str = "") -> str:
@@ -57,7 +58,10 @@ class OpenAIProvider(BaseLLMProvider):
             return "[OpenAI Error]: Chưa cấu hình OPENAI_API_KEY trong file .env!"
         try:
             import openai
-            client = openai.OpenAI(api_key=self.api_key)
+            client_kwargs = {"api_key": self.api_key}
+            if self.base_url and self.base_url.strip():
+                client_kwargs["base_url"] = self.base_url.strip()
+            client = openai.OpenAI(**client_kwargs)
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
