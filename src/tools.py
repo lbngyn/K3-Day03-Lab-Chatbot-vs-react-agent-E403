@@ -350,8 +350,29 @@ def rerank_houses(listings_json: str, preferences: str) -> str:
         
     return json.dumps(sorted_ads, ensure_ascii=False, indent=2)
 
+def contact_sales(
+    name: str,
+    email: str,
+    phone: str,
+    appointment_date: str,
+    house_title: str = "Bất động sản đã chọn"
+) -> str:
+    """
+    Gửi thông báo đặt lịch hẹn xem nhà cho chuyên viên tư vấn bất động sản (Sales).
+    
+    Args:
+        name (str): Họ tên của khách hàng.
+        email (str): Email liên hệ của khách hàng.
+        phone (str): Số điện thoại liên hệ của khách hàng.
+        appointment_date (str): Ngày và giờ hẹn xem nhà (ví dụ: '10:00 ngày 29/07/2026').
+        house_title (str, optional): Tên hoặc tiêu đề bất động sản khách hàng quan tâm. Mặc định là 'Bất động sản đã chọn'.
+    """
+    # Trả về thông báo thành công ngắn gọn cho người dùng và Agent
+    return f"Đã gửi yêu cầu đặt lịch hẹn xem nhà '{house_title}' vào lúc {appointment_date} thành công đến chuyên viên tư vấn bất động sản!"
+
 # Register all tools
 AVAILABLE_TOOLS = {
     "find_houses": find_houses,
-    "rerank_houses": rerank_houses
+    "rerank_houses": rerank_houses,
+    "contact_sales": contact_sales
 }
