@@ -1,0 +1,41 @@
+%% Hybrid Flowchart cho UI React Agent Dashboard
+%% Khop voi ui/src/utils/reactAgentSimulator.js va ui/src/data/toolsRegistry.js
+
+flowchart TD
+    A["User Query"] --> B{"Mode / Intent"}
+
+    %% Chatbot Baseline: phan hoi sach, khong goi tool
+    B -->|"Baseline mode / cau hoi don gian"| C["CHATBOT BASELINE"]
+    C --> D["processQuery(query, baseline)"]
+    D --> E["Tra loi kien thuc tong quat"]
+    E --> Z["Final Response"]
+    D --> T["Trace Log"]
+
+    %% ReAct Agent: tim nha, xep hang va dat lich xem
+    B -->|"ReAct mode / cau hoi can tool"| F["REACT AGENT"]
+    F --> G{"Loai yeu cau"}
+
+    G -->|"Tim phong / can ho"| H["find_houses(location, max_price)"]
+    H --> I{"Co ket qua?"}
+    I -->|"Khong"| N["Safe response: khong tim thay can ho phu hop"]
+    N --> Z
+    I -->|"Co"| J["rerank(properties)"]
+    J --> K["Hien thi danh sach can ho"]
+    K --> L{"Nguoi dung chon dat lich?"}
+    L -->|"Khong"| Z
+    L -->|"Co"| M["contact_sales(property_id, preferred_time)"]
+
+    G -->|"Dat lich / xem nha"| M
+    M --> P["Booking Sidebar: luu lich hen"]
+    P --> Z
+
+    G -->|"Cau hoi khac"| Q["Tra loi chao mung / huong dan"]
+    Q --> Z
+
+    %% Quan sat va guardrail duoc hien thi trong dashboard
+    F -.-> R["Trace Log: Thought / Action / Observation"]
+    C -.-> R
+    M -.-> R
+    R --> S["Guardrail config: MAX_ITERATIONS = 3"]
+    S -->|"Vuot gioi han"| U["Safe Fallback"]
+    U --> Z
