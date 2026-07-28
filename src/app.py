@@ -454,18 +454,55 @@ if __name__ == "__main__":
     tests = load_test_cases()
     print(f"✅ Đã tải thành công {len(tests)} Test Cases từ config/test_cases.json\n")
     
-    # Chạy thử câu test số 3
-    sample_query = tests[2]["question"]
-    
-    print("--- DEMO 1: CHẠY TRÊN CHATBOT BASELINE ---")
-    agent_response = run_baseline_chatbot(sample_query, provider)
-    log_path = save_chat_log(
-        user_query=sample_query,
-        agent_response=agent_response,
-        provider_name=provider.__class__.__name__,
-    )
-    print(f"💾 Đã lưu kết quả vào: {log_path}")
-    
-    print("\n--- DEMO 2: CHẠY TRÊN REACT AGENT ---")
-    # run_react_agent(sample_query, provider)
+    # Lưu kết quả baseline và toàn bộ ReAct trace/tool observations.
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_path = os.path.join(base_dir, "logs", "agent_chat.jsonl")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        for index, test_case in enumerate(tests, start=1):
+            test_id = test_case.get("id", index)
+            query = test_case["question"]
+
+            print(f"\n{'=' * 60}")
+            print(f"TEST CASE {test_id}/{len(tests)}: {query}")
+
+            print("\n--- CHATBOT BASELINE ---")
+            baseline_response = provider.generate(
+                query,
+                system_prompt=CHATBOT_BASELINE_PROMPT
+            )
+            print(baseline_response)
+
+            print("\n--- REACT AGENT ---")
+            react_result = execute_react_loop(
+                user_query=query,
+                provider=provider,
+                session_id=f"cli_test_{test_id}"
+            )
+            print(react_result["final_answer"])
+
+            log_record = {
+                "timestamp": datetime.now().isoformat(),
+                "test_case": test_case,
+                "provider": provider.__class__.__name__,
+                "baseline": {
+                    "response": baseline_response
+                },
+                "react": react_result,
+                "tool_logs": [
+                    {
+                        "step": step.get("step"),
+                        "action": step.get("action"),
+                        "observation": step.get("observation")
+                    }
+                    for step in react_result.get("steps", [])
+                    if step.get("action")
+                ]
+            }
+            log_file.write(json.dumps(log_record, ensure_ascii=False) + "\n")
+            log_file.flush()
+
+    print(f"\n✅ Đã chạy xong {len(tests)} test cases.")
+    print(f"💾 Đã lưu baseline, ReAct trace và tool log vào: {log_path}")
 

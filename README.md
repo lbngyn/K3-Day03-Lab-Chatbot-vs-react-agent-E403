@@ -27,7 +27,7 @@ Bài Lab giúp bạn hiểu rõ sự tiến hóa qua 4 cấp độ của hệ th
 ├── 📄 requirements.txt          <-- 📦 Thư viện cần cài đặt
 │
 ├── 📁 config/                   <-- 🛠️ CẤU HÌNH & DỮ LIỆU
-│   └── 📄 test_cases.json       <-- 🟢 [Role 1] Bộ đề 5 Test Cases thử thách AI
+│   └── 📄 test_cases.json       <-- 🟢 [Role 1] Bộ đề 20 Test Cases thử thách AI
 │
 ├── 📁 src/                      <-- 💻 MÃ NGUỒN PYTHON (BOILERPLATE)
 │   ├── 📄 tools.py              <-- 🛠️ [Role 2] Khai báo các công cụ (Tools)
@@ -49,7 +49,7 @@ Bài Lab giúp bạn hiểu rõ sự tiến hóa qua 4 cấp độ của hệ th
 timeline
     title ⏱️ KỊCH BẢN THỰC HÀNH LAB 3 (Tổng thời lượng: 150 phút)
     Mốc 1 (20 phút) : Định hình & Đánh giá Agentic Fit : Chọn bài toán & Lập bảng chấm điểm Scoring Matrix
-    Mốc 2 (30 phút) : Baseline Chatbot & Khai báo Tool : Dựng Chatbot gốc & Viết Tool Specs + 5 Test Cases
+    Mốc 2 (30 phút) : Baseline Chatbot & Khai báo Tool : Dựng Chatbot gốc & Viết Tool Specs + 20 Test Cases
     Mốc 3 (60 phút) : ReAct Loop & Safeguards : Viết Prompt, lắp Agent, cài Phanh Guardrails & Chạy Test
     Mốc 4 (40 phút) : Tương tác liên nhóm & Hybrid Pattern : Cross-Audit (Tấn công/Phòng thủ) & Vẽ Flowchart
 ```
@@ -71,3 +71,111 @@ timeline
 
 > 🚀 **BẮT ĐẦU LÀM BÀI**:
 > Vui lòng mở sổ tay thực hành 👉 **[PHAN_CONG_CONG_VIEC.md](file:///c:/Users/Admin/Documents/VinUni/LabCoachVin/LabKeyCoach/Day-3-Lab-Chatbot-vs-react-agent-E402/docs/PHAN_CONG_CONG_VIEC.md)** để xem phân vai và checklist công việc cụ thể cho từng thành viên!
+
+---
+
+## 5. KIẾN TRÚC IMPLEMENTATION HIỆN TẠI
+
+Đề tài nhóm lựa chọn là **Trợ Lý Tìm & Đặt Lịch Xem Nhà Trọ / Căn Hộ Cho Thuê**.
+
+```text
+config/test_cases.json (20 test case)
+              |
+              v
+        src/app.py
+          /     \
+         v       v
+Baseline Chatbot  ReAct Agent Loop
+  (0 tool call)   Thought -> Action -> Observation
+                         |
+                         v
+               AVAILABLE_TOOLS (src/tools.py)
+               - crawl_web
+               - find_houses
+               - rerank_houses / rerank
+               - contact_sales
+                         |
+                         v
+                 logs/agent_chat.jsonl
+```
+
+### Luồng Baseline
+
+Baseline gọi LLM đúng một lần với `CHATBOT_BASELINE_PROMPT`. Luồng này không đi qua `execute_tool()`, không có dữ liệu listing thời gian thực và không được tuyên bố đã hoàn tất liên hệ/đặt lịch.
+
+### Luồng ReAct Agent
+
+`execute_react_loop()` thực hiện tối đa `MAX_ITERATIONS = 4` bước:
+
+1. LLM sinh `Thought` và `Action`.
+2. `parse_action_call()` phân tích tên tool và tham số.
+3. `execute_tool()` kiểm tra tool trong `AVAILABLE_TOOLS` và thực thi.
+4. Kết quả thật được chèn vào prompt dưới dạng `Observation`.
+5. Agent tiếp tục suy luận hoặc trả `Final Answer`.
+
+Agent có conversation memory theo `session_id`; mỗi session giữ lịch sử user/assistant trong `MEMORY_STORE`.
+
+---
+
+## 6. CÁCH CÀI ĐẶT VÀ CHẠY
+
+### Backend và CLI test runner
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python src/app.py
+```
+
+`python src/app.py` chạy toàn bộ 20 test case trên cả Baseline và ReAct, sau đó append trace vào:
+
+```text
+logs/agent_chat.jsonl
+```
+
+### FastAPI
+
+```powershell
+uvicorn src.app:app --reload --port 8000
+```
+
+API documentation: `http://localhost:8000/docs`
+
+Các endpoint chính:
+
+- `POST /api/chat/baseline`
+- `POST /api/chat/react`
+- `GET /api/chat/memory/{session_id}`
+- `DELETE /api/chat/memory/{session_id}`
+- `POST /api/crawl`
+- `POST /api/search-houses`
+
+### Frontend
+
+```powershell
+cd ui
+npm install
+npm run dev
+```
+
+Frontend: `http://localhost:5173`
+
+Provider được chọn bằng `LLM_PROVIDER`. Các API key phải đặt trong `.env` và không được commit vào repository.
+
+---
+
+## 7. TRẠNG THÁI ARTIFACT DELIVERY
+
+| Artifact | Trạng thái | Bằng chứng |
+| :--- | :---: | :--- |
+| `README.md` | Hoàn thành | Có kiến trúc, rubric, cách chạy và endpoint. |
+| `docs/PHAN_CONG_CONG_VIEC.md` | Hoàn thành | Có 5 Roles, tên thành viên và checklist 4 mốc. |
+| `docs/DANH_SACH_DE_TAI.md` | Hoàn thành | Có đủ 10 đề tài và đánh dấu đề tài nhóm chọn. |
+| `docs/trace_eval.md` | Hoàn thành | Có Scoring Matrix, Baseline evaluation, ReAct trace, failed trace và guardrails. |
+| `config/test_cases.json` | Hoàn thành | Có 20 test case từ search đến edge case. |
+| `src/tools.py` | Hoàn thành theo scope hiện tại | Có docstring, error handling, logging và Tool Registry. |
+| `src/prompts.py` | Hoàn thành | Có Baseline prompt, ReAct format và `MAX_ITERATIONS`. |
+| `src/app.py` | Hoàn thành | Có parser, executor loop, API, memory, CLI runner và JSONL trace. |
+
+Giới hạn đã biết được giữ minh bạch trong `docs/trace_eval.md`: một số test booking/email kiểm tra capability chưa có trong Tool Registry và được dùng làm failed trace/root-cause analysis.
