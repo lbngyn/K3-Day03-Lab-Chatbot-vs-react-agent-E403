@@ -6,8 +6,7 @@ File chính kết nối ReAct Agent, Tools, Prompts, Test Cases & FastAPI Web Se
 import json
 import os
 import sys
-import re
-from typing import Optional, List, Dict, Any
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Đảm bảo import các module cùng thư mục src/ hoạt động mượt mà
@@ -26,7 +25,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 # Import các thành phần từ file của Role 2, Role 3 & Multi-Provider Adapter
-from tools import AVAILABLE_TOOLS, crawl_web, find_houses, rerank_houses, contact_sales
+from tools import AVAILABLE_TOOLS, find_houses, rerank_houses, contact_sales
 from prompts import CHATBOT_BASELINE_PROMPT, REACT_SYSTEM_PROMPT, MAX_ITERATIONS
 from providers import get_llm_provider
 
@@ -79,16 +78,36 @@ def load_test_cases():
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def save_chat_log(user_query: str, agent_response: str, provider_name: str) -> str:
+    """Lưu một lượt hội thoại vào file JSONL để sử dụng lâu dài."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(base_dir, "logs")
+    log_path = os.path.join(log_dir, "agent_chat.jsonl")
+    os.makedirs(log_dir, exist_ok=True)
 
-def execute_react_loop(user_query: str, provider) -> Dict[str, Any]:
+    log_entry = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "provider": provider_name,
+        "user_query": user_query,
+        "agent_response": agent_response,
+    }
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+    return log_path
+
+
+def run_baseline_chatbot(user_query: str, provider):
     """
-    Thực thi vòng lặp ReAct Agent (Thought -> Action -> Observation) có Guardrails.
-    Trả về dict chứa từng bước suy luận và câu trả lời cuối cùng.
+    Chatbot tư vấn bất động sản cơ bản, không sử dụng công cụ.
     """
-    steps = []
-    step = 0
-    final_answer = ""
-    guardrail_triggered = False
+    print(f"\n💬 [CHATBOT BASELINE] Câu hỏi: {user_query}")
+
+    system_prompt = CHATBOT_BASELINE_PROMPT
+
+    response = provider.generate(user_query, system_prompt=system_prompt)
+    print(f"🤖 Chatbot trả lời:\n{response}")
+    return response
 
     # Logic điều hướng ReAct Agent
     query_lower = user_query.lower()
@@ -302,7 +321,27 @@ if __name__ == "__main__":
     print("==================================================")
     print("🏫 ĐẠI HỌC VINUNI - BÀI LAB 3: REACT AGENT & FASTAPI")
     print("==================================================")
-    print("🌐 Bắt đầu khởi chạy FastAPI Server tại: http://localhost:8000")
-    print("📖 Xem Swagger UI Documentation tại: http://localhost:8000/docs")
-    print("==================================================")
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    
+    # Khởi tạo Multi-Provider LLM Adapter (Đọc từ biến môi trường LLM_PROVIDER)
+    provider = get_llm_provider()
+    model_name = getattr(provider, "model_name", "Offline Mock Mode")
+    print(f"🔌 LLM Provider đang hoạt động: {provider.__class__.__name__} (Model: {model_name})")
+    
+    tests = load_test_cases()
+    print(f"✅ Đã tải thành công {len(tests)} Test Cases từ config/test_cases.json\n")
+    
+    # Chạy thử câu test số 3
+    sample_query = tests[2]["question"]
+    
+    print("--- DEMO 1: CHẠY TRÊN CHATBOT BASELINE ---")
+    agent_response = run_baseline_chatbot(sample_query, provider)
+    log_path = save_chat_log(
+        user_query=sample_query,
+        agent_response=agent_response,
+        provider_name=provider.__class__.__name__,
+    )
+    print(f"💾 Đã lưu kết quả vào: {log_path}")
+    
+    print("\n--- DEMO 2: CHẠY TRÊN REACT AGENT ---")
+    # run_react_agent(sample_query, provider)
+
