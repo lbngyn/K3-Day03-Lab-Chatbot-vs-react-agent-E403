@@ -6,6 +6,7 @@ File chính ghép nối tất cả các thành phần: Tools + Prompts + Test Ca
 import json
 import os
 import sys
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Đảm bảo import các module cùng thư mục src/ hoạt động mượt mà
@@ -19,7 +20,7 @@ if sys.stdout.encoding != 'utf-8':
         pass
 
 # Import các thành phần từ file của Role 2, Role 3 & Multi-Provider Adapter
-from tools import AVAILABLE_TOOLS, get_weather, search_flights
+from tools import AVAILABLE_TOOLS, find_houses, rerank_houses, contact_sales
 from prompts import CHATBOT_BASELINE_PROMPT, REACT_SYSTEM_PROMPT, MAX_ITERATIONS
 from providers import get_llm_provider
 
@@ -38,16 +39,36 @@ def load_test_cases():
         return json.load(f)
 
 
+def save_chat_log(user_query: str, agent_response: str, provider_name: str) -> str:
+    """Lưu một lượt hội thoại vào file JSONL để sử dụng lâu dài."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(base_dir, "logs")
+    log_path = os.path.join(log_dir, "agent_chat.jsonl")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_entry = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "provider": provider_name,
+        "user_query": user_query,
+        "agent_response": agent_response,
+    }
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+
+    return log_path
+
+
 def run_baseline_chatbot(user_query: str, provider):
     """
-    Dựng Chatbot gốc (Baseline) không có công cụ.
+    Chatbot tư vấn bất động sản cơ bản, không sử dụng công cụ.
     """
     print(f"\n💬 [CHATBOT BASELINE] Câu hỏi: {user_query}")
-    print(f"⚙️ System Prompt: {CHATBOT_BASELINE_PROMPT.strip()}")
-    
-    # Gọi LLM Provider thực hiện sinh câu trả lời
-    response = provider.generate(user_query, system_prompt=CHATBOT_BASELINE_PROMPT)
+
+    system_prompt = CHATBOT_BASELINE_PROMPT
+
+    response = provider.generate(user_query, system_prompt=system_prompt)
     print(f"🤖 Chatbot trả lời:\n{response}")
+    return response
 
 
 def run_react_agent(user_query: str, provider):
@@ -95,7 +116,13 @@ if __name__ == "__main__":
     sample_query = tests[2]["question"]
     
     print("--- DEMO 1: CHẠY TRÊN CHATBOT BASELINE ---")
-    run_baseline_chatbot(sample_query, provider)
+    agent_response = run_baseline_chatbot(sample_query, provider)
+    log_path = save_chat_log(
+        user_query=sample_query,
+        agent_response=agent_response,
+        provider_name=provider.__class__.__name__,
+    )
+    print(f"💾 Đã lưu kết quả vào: {log_path}")
     
     print("\n--- DEMO 2: CHẠY TRÊN REACT AGENT ---")
-    run_react_agent(sample_query, provider)
+    # run_react_agent(sample_query, provider)
