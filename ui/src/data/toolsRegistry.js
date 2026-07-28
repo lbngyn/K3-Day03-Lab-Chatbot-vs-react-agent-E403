@@ -45,16 +45,20 @@ export const REGISTERED_TOOLS = [
           type: "string",
           description: "Mã định danh căn hộ (Ví dụ: 'AP-102')"
         },
-        preferred_time: {
+        customer_name: {
           type: "string",
-          description: "Thời gian xem nhà (Ví dụ: '15:00 29/07/2026')"
+          description: "Họ và tên của khách hàng đặt lịch xem nhà"
         },
         customer_phone: {
           type: "string",
           description: "Số điện thoại liên hệ của khách hàng"
+        },
+        appointment_date: {
+          type: "string",
+          description: "Thời gian hẹn xem nhà (Ví dụ: '15:00 29/07/2026')"
         }
       },
-      required: ["property_id", "preferred_time"]
+      required: ["property_id", "customer_name", "customer_phone"]
     },
     status: "Active",
     icon: "Calendar"

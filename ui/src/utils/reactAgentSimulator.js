@@ -83,14 +83,19 @@ export function executeTool(toolName, args) {
   if (toolName === "contact_sales") {
     const propId = args.property_id || "AP-102";
     const prop = MOCK_PROPERTIES.find(p => p.id === propId) || MOCK_PROPERTIES[0];
+    const customerName = args.customer_name || args.name || "Khách hàng";
+    const customerPhone = args.customer_phone || args.phone || "Chưa cung cấp";
+    const scheduledTime = args.appointment_date || args.preferred_time || "15:00 29/07/2026";
     
     return {
       status: "BOOKED",
       booking_id: `BK-${Math.floor(100000 + Math.random() * 900000)}`,
       property: prop,
-      scheduled_time: args.preferred_time || "15:00 29/07/2026",
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      scheduled_time: scheduledTime,
       sales_contact: `${prop.salesName} (${prop.salesPhone})`,
-      message: `Đã ghi nhận yêu cầu đặt lịch hẹn xem nhà cho căn hộ ${prop.title} thành công!`
+      message: `Đã ghi nhận yêu cầu đặt lịch hẹn xem nhà cho khách hàng ${customerName} (${customerPhone}) tại căn hộ ${prop.title} thành công!`
     };
   }
 

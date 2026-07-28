@@ -1,10 +1,11 @@
 import React from 'react';
-import { Bot, Cpu, Zap, Key, ShieldCheck, Wrench, Calendar } from 'lucide-react';
+import { Bot, Cpu, Zap, Key, ShieldCheck, Wrench, Calendar, Server } from 'lucide-react';
 
 export default function Header({ 
   activeToolsCount = 3, 
   appointmentsCount = 0, 
   avgLatency = '320ms',
+  isBackendOnline = false,
   onOpenBookingSidebar 
 }) {
   return (
@@ -34,6 +35,16 @@ export default function Header({
         {/* Live Status Indicators */}
         <div className="flex items-center space-x-3 text-xs font-medium text-slate-600">
           
+          {/* Backend Connection Status Badge */}
+          <div className={`hidden sm:flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border font-semibold ${
+            isBackendOnline 
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+              : 'bg-amber-50 text-amber-700 border-amber-200'
+          }`}>
+            <Server className={`w-3.5 h-3.5 ${isBackendOnline ? 'text-emerald-600' : 'text-amber-600'}`} />
+            <span>{isBackendOnline ? 'FastAPI Connected' : 'Mock Mode (Local)'}</span>
+          </div>
+
           {/* Appointment Drawer Trigger Button */}
           <button
             onClick={onOpenBookingSidebar}
@@ -61,3 +72,4 @@ export default function Header({
     </header>
   );
 }
+

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import TabNavigation from './components/TabNavigation';
 import ChatStudio from './components/ChatStudio';
@@ -6,56 +6,61 @@ import TestRunner from './components/TestRunner';
 import TraceInspector from './components/TraceInspector';
 import FlowchartView from './components/FlowchartView';
 import BookingSidebar from './components/BookingSidebar';
+import { checkBackendStatus } from './services/api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [traceHistory, setTraceHistory] = useState([]);
+  const [isBackendOnline, setIsBackendOnline] = useState(false);
+  const [activeToolsCount, setActiveToolsCount] = useState(3);
   
   // Appointments & Booking Drawer State
   const [isBookingDrawerOpen, setIsBookingDrawerOpen] = useState(false);
   const [selectedPropertyForBooking, setSelectedPropertyForBooking] = useState(null);
-  const [appointments, setAppointments] = useState([
-    {
-      id: "BK-882103",
-      property: {
-        id: "AP-102",
-        title: "Chung cư mini Studio Luxury Cầu Giấy",
-        address: "123 Cầu Giấy, Quan Hoa, Cầu Giấy, Hà Nội",
-        price: 7.5,
-        image: "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=600&q=80",
-        salesName: "Nguyễn Văn Anh",
-        salesPhone: "0988.123.456"
-      },
-      date: "2026-07-29",
-      timeSlot: "15:00 - 17:00",
-      customerName: "Nguyễn Văn Khách",
-      customerPhone: "0988123456",
-      salesName: "Nguyễn Văn Anh",
-      salesPhone: "0988.123.456",
-      status: "CONFIRMED"
+  const [appointments, setAppointments] = useState([]);
+
+  useEffect(() => {
+    async function verifyBackend() {
+      const res = await checkBackendStatus();
+      setIsBackendOnline(res.online);
+      if (res.availableTools && res.availableTools.length > 0) {
+        setActiveToolsCount(res.availableTools.length);
+      }
     }
-  ]);
+    verifyBackend();
+    const timer = setInterval(verifyBackend, 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   const handleNewTrace = (newTrace) => {
     setTraceHistory(prev => [newTrace, ...prev]);
 
-    // If trace produced a booking result, append to appointments
-    if (newTrace.bookingResult && newTrace.bookingResult.status === "BOOKED") {
+    // Trích xuất kết quả đặt lịch thực tế từ ReAct Agent tool call (contact_sales)
+    if (newTrace.bookingResult && (newTrace.bookingResult.status === "BOOKED" || newTrace.bookingResult.status === "SUCCESS")) {
       const b = newTrace.bookingResult;
-      setAppointments(prev => [
-        {
-          id: b.booking_id,
-          property: b.property,
-          date: "2026-07-29",
-          timeSlot: "15:00 - 17:00",
-          customerName: "Nguyễn Văn Khách",
-          customerPhone: "0988123456",
-          salesName: b.property.salesName,
-          salesPhone: b.property.salesPhone,
-          status: "CONFIRMED"
+      const prop = b.property || {};
+      
+      const newAppointment = {
+        id: b.booking_id || `BK-${Math.floor(100000 + Math.random() * 900000)}`,
+        property: {
+          id: prop.id || "AP-102",
+          title: prop.title || "Căn hộ đã chọn",
+          address: prop.address || "Địa chỉ theo tin đăng",
+          price: prop.price || "Thỏa thuận",
+          image: prop.image || "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?auto=format&fit=crop&w=600&q=80",
+          salesName: prop.salesName || "Chuyên viên tư vấn",
+          salesPhone: prop.salesPhone || "0988.123.456"
         },
-        ...prev
-      ]);
+        date: b.scheduled_time || "2026-07-29",
+        timeSlot: "Lịch xem trực tiếp",
+        customerName: b.customer_name || "Khách hàng",
+        customerPhone: b.customer_phone || "Chưa cung cấp",
+        salesName: prop.salesName || "Chuyên viên tư vấn",
+        salesPhone: prop.salesPhone || "0988.123.456",
+        status: "CONFIRMED"
+      };
+
+      setAppointments(prev => [newAppointment, ...prev]);
     }
   };
 
@@ -99,14 +104,16 @@ export default function App() {
       
       {/* Top Fixed Header */}
       <Header 
-        activeToolsCount={3} 
+        activeToolsCount={activeToolsCount} 
         appointmentsCount={appointments.length}
         avgLatency={traceHistory.length > 0 ? `${Math.round(traceHistory.reduce((a, b) => a + b.executionTimeMs, 0) / traceHistory.length)}ms` : '320ms'} 
+        isBackendOnline={isBackendOnline}
         onOpenBookingSidebar={() => {
           setSelectedPropertyForBooking(null);
           setIsBookingDrawerOpen(true);
         }}
       />
+
 
       {/* Primary Tab Navigation */}
       <TabNavigation activeTab={activeTab} setActiveTab={setActiveTab} />

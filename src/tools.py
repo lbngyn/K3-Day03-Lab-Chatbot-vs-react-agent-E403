@@ -1,44 +1,117 @@
 """
 🛠️ TOOL REGISTRY & SCHEMAS (Dành cho Role 2: Tool & Spec Engineer)
-Nơi khai báo tất cả các "món đồ nghề" mà ReAct Agent có thể gọi.
+Nơi khai báo tất cả các món đồ nghề mà ReAct Agent có thể gọi.
 """
 
 import asyncio
 import json
+import logging
 import re
+import sys
+import time
 import requests
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, quote
 
+# Đảm bảo in ra Tiếng Việt và Emojis không bị lỗi trên Windows Console
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+# Cấu hình Logger chuyên dụng cho Tool System
+logger = logging.getLogger("ToolEngine")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [TOOLS] %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 
+def resolve_location_and_transaction(transaction_type: str, region: str = None, area: str = None) -> Tuple[str, int, Optional[str]]:
+    """
+    Chuẩn hóa nhu cầu giao dịch (Thuê vs Bán) và tự động nhận diện Mã Tỉnh/Thành phố cùng Quận/Huyện trên toàn quốc.
+    """
+    # 1. Map transaction_type to st ('u' = Rent/Cho thuê, 's' = Sale/Mua bán)
+    t_clean = str(transaction_type).lower().replace('_', ' ').replace('-', ' ').strip()
+    st_val = "u" if any(w in t_clean for w in ["thue", "rent", "cho thue", "cho thuê", "thuê"]) else "s"
+
+    # 2. Danh sách chuẩn hóa các Quận/Huyện trọng điểm
+    hanoi_districts = [
+        "thanh xuân", "cầu giấy", "đống đa", "ba đình", "hoàn kiếm", "hai bà trưng",
+        "hoàng mai", "nam từ liêm", "bắc từ liêm", "hà đông", "tây hồ", "long biên",
+        "thanh trì", "gia lâm", "hoài đức", "đông anh", "sóc sơn"
+    ]
+    hcm_districts = [
+        "quận 1", "quận 3", "quận 4", "quận 5", "quận 6", "quận 7", "quận 8", "quận 9", "quận 10", "quận 11", "quận 12",
+        "q1", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11", "q12",
+        "bình thạnh", "gò vấp", "tân bình", "phú nhuận", "thủ đức", "bình tân", "tân phú", "bình chánh", "nhà bè", "hóc môn", "củ chi"
+    ]
+    danang_districts = [
+        "hải châu", "thanh khê", "sơn trà", "ngũ hành sơn", "liên chiểu", "cẩm lệ", "hòa vàng"
+    ]
+
+    input_text = f"{region or ''} {area or ''}".lower().strip()
+    
+    region_code = None
+    detected_area = area.strip() if area else None
+
+    # Check Hà Nội (region_v2 = 12000)
+    matched_hn = [d for d in hanoi_districts if d in input_text]
+    if matched_hn or any(k in input_text for k in ["hà nội", "ha noi", "hn"]):
+        region_code = 12000
+        if not detected_area and matched_hn:
+            detected_area = matched_hn[0]
+            
+    # Check Hồ Chí Minh (region_v2 = 13000)
+    if not region_code:
+        matched_hcm = [d for d in hcm_districts if d in input_text]
+        if matched_hcm or any(k in input_text for k in ["hồ chí minh", "ho chi minh", "hcm", "sài gòn", "tphcm"]):
+            region_code = 13000
+            if not detected_area and matched_hcm:
+                detected_area = matched_hcm[0]
+
+    # Check Đà Nẵng (region_v2 = 3000)
+    if not region_code:
+        matched_dn = [d for d in danang_districts if d in input_text]
+        if matched_dn or any(k in input_text for k in ["đà nẵng", "da nang"]):
+            region_code = 3000
+            if not detected_area and matched_dn:
+                detected_area = matched_dn[0]
+
+    # Default fallback to HCM (13000)
+    if not region_code:
+        region_code = 13000
+
+    return st_val, region_code, detected_area
 
 
 def crawl_web(url: str, query: str = "") -> str:
     """
     Crawl và lọc nội dung văn bản từ một trang web (URL) với các tham số lọc tùy chọn (Từ khóa, Khu vực, Mức giá...).
-    
-    Args:
-        url (str): Địa chỉ URL của trang web cần crawl (Ví dụ: 'https://www.nhatot.com/thue-bat-dong-san')
-        query (str): Tuỳ chọn lọc từ khóa/khu vực (Ví dụ: 'Quận 7 dưới 10 triệu', 'Vinhomes 2 phòng ngủ')
-        
-    Returns:
-        str: Trích xuất nội dung văn bản dạng Markdown/Text chứa dữ liệu lọc được.
     """
+    logger.info(f"🛠️ [TOOL CALL: crawl_web] Input URL='{url}', Query='{query}'")
+
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url
 
     url_lower = url.lower()
 
-    # Tách query param từ URL nếu có (VD: ?q=Bình+Thạnh)
     parsed_url = urlparse(url)
     qs_params = parse_qs(parsed_url.query)
     url_q = qs_params.get("q", [""])[0] or qs_params.get("query", [""])[0]
     
     effective_query = (query or url_q).strip()
 
-    # 🟢 XỬ LÝ ĐẶC BIỆT CHO NHÀ TỐT / CHỢ TỐT (Hỗ trợ FILTER + Định dạng CẤU TRÚC JSON CHUẨN)
+    # 🟢 XỬ LÝ ĐẶC BIỆT CHO NHÀ TỐT / CHỢ TỐT
     if "nhatot.com" in url_lower or "chotot.com" in url_lower:
+        logger.info(f"🌐 [crawl_web -> ChoTot API] Query filter: '{effective_query}'")
         try:
             api_url = "https://gateway.chotot.com/v1/public/ad-listing"
             params = {
@@ -53,6 +126,7 @@ def crawl_web(url: str, query: str = "") -> str:
                 "Accept": "application/json"
             }
             res = requests.get(api_url, headers=api_headers, params=params, timeout=10)
+            
             if res.status_code == 200:
                 data = res.json()
                 ads = data.get("ads", [])
@@ -72,8 +146,8 @@ def crawl_web(url: str, query: str = "") -> str:
                     full_address = ", ".join(filter(None, [ward, area, region])) or "Chưa rõ địa chỉ"
                     
                     seller = ad.get("account_name", "Chủ nhà / Môi giới")
-                    list_id = ad.get("list_id")
-                    item_link = f"https://www.nhatot.com/{list_id}.htm" if list_id else ""
+                    ad_id = ad.get("ad_id") or ad.get("list_id")
+                    item_link = f"https://www.nhatot.com/{ad_id}.htm" if ad_id else ""
                     
                     img_thumb = ad.get("image") or ad.get("thumbnail_image")
                     images_list = ad.get("images", [])
@@ -99,14 +173,15 @@ def crawl_web(url: str, query: str = "") -> str:
                     "total_results": len(listings),
                     "listings": listings
                 }
-
+                logger.info(f"✅ [ChoTot API Success] Formatted {len(listings)} listings.")
                 return json.dumps(result_payload, ensure_ascii=False, indent=2)
 
         except Exception as e:
-            pass
+            logger.error(f"❌ [ChoTot API Exception]: {e}", exc_info=True)
 
-    # 🏠 XỬ LÝ ĐẶC BIỆT CHO PHONGTRO123.COM (Hỗ trợ FILTER + ĐỊNH DẠNG CẤU TRÚC JSON CHUẨN)
+    # 🏠 XỬ LÝ ĐẶC BIỆT CHO PHONGTRO123.COM
     if "phongtro123.com" in url_lower:
+        logger.info(f"🏠 [crawl_web -> PhongTro123] Query: '{effective_query}'")
         try:
             from bs4 import BeautifulSoup
 
@@ -116,7 +191,6 @@ def crawl_web(url: str, query: str = "") -> str:
                 "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
             }
 
-            # Map địa điểm tiếng Việt phổ biến sang URL slug chuẩn của phongtro123.com
             district_map = {
                 "bình thạnh": "quan-binh-thanh", "binh thanh": "quan-binh-thanh",
                 "quận 7": "quan-7", "quan 7": "quan-7", "q7": "quan-7",
@@ -129,9 +203,9 @@ def crawl_web(url: str, query: str = "") -> str:
                 "quận 5": "quan-5", "quan 5": "quan-5", "q5": "quan-5",
                 "quận 8": "quan-8", "quan 8": "quan-8", "q8": "quan-8",
                 "quận 12": "quan-12", "quan 12": "quan-12", "q12": "quan-12",
-                "tân phú": "quan-tan-phu", "tan phu": "quan-tan-phu",
-                "phú nhuận": "quan-phu-nhuan", "phu nhuan": "quan-phu-nhuan",
-                "bình tân": "quan-binh-tan", "binh tan": "quan-binh-tan",
+                "thanh xuân": "quan-thanh-xuan", "thanh xuan": "quan-thanh-xuan",
+                "cầu giấy": "quan-cau-giay", "cau giay": "quan-cau-giay",
+                "đống đa": "quan-dong-da", "dong da": "quan-dong-da",
                 "hà nội": "ha-noi", "ha noi": "ha-noi",
                 "đà nẵng": "da-nang", "da nang": "da-nang"
             }
@@ -148,12 +222,16 @@ def crawl_web(url: str, query: str = "") -> str:
                 if matched_slug:
                     if matched_slug in ["ha-noi", "da-nang"]:
                         target_fetch_url = f"https://phongtro123.com/tinh-thanh/{matched_slug}"
+                    elif matched_slug in ["quan-thanh-xuan", "quan-cau-giay", "quan-dong-da"]:
+                        target_fetch_url = f"https://phongtro123.com/tinh-thanh/ha-noi/{matched_slug}"
                     else:
                         target_fetch_url = f"https://phongtro123.com/tinh-thanh/ho-chi-minh/{matched_slug}"
                 else:
                     target_fetch_url = f"https://phongtro123.com/tim-kiem?k={quote(effective_query)}"
 
+            logger.info(f"📡 [PhongTro123 Request] GET {target_fetch_url}")
             res = requests.get(target_fetch_url, headers=headers, timeout=10)
+            
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 listing_ul = soup.find('ul', class_=lambda c: c and 'post' in str(c).lower()) or soup.find('ul', class_=lambda c: c and 'list' in str(c).lower())
@@ -234,7 +312,6 @@ def crawl_web(url: str, query: str = "") -> str:
                             "images": images_list[:5]
                         })
 
-                # Bổ sung lọc từ khóa thứ cấp in-memory (nếu có từ khóa bổ sung ngoài địa điểm)
                 if effective_query:
                     search_words = [w for w in effective_query.lower().split() if len(w) > 1 and w not in ["tìm", "phòng", "trọ", "ở", "tại", "cho", "thuê", "trên", "phongtro123.com", "phongtro123", "giá", "dưới", "triệu", "tr"]]
                     if search_words:
@@ -252,13 +329,14 @@ def crawl_web(url: str, query: str = "") -> str:
                     "total_results": len(listings),
                     "listings": listings
                 }
-
+                logger.info(f"✅ [PhongTro123 Success] Extracted {len(listings)} listings.")
                 return json.dumps(result_payload, ensure_ascii=False, indent=2)
 
         except Exception as e:
-            pass
+            logger.error(f"❌ [PhongTro123 Exception]: {e}", exc_info=True)
 
-    # 1. Thử dùng Crawl4AI (AsyncWebCrawler)
+    # 1. Crawl4AI Engine
+    logger.info(f"🔄 [crawl_web -> Crawl4AI] Attempting AsyncWebCrawler on '{url}'")
     try:
         from crawl4ai import AsyncWebCrawler
         
@@ -282,35 +360,27 @@ def crawl_web(url: str, query: str = "") -> str:
             content = asyncio.run(_async_crawl())
 
         if content and "Just a moment..." not in content:
+            logger.info(f"✅ [Crawl4AI Success] Extracted {len(content)} characters.")
             if len(content) > 1500:
                 content = content[:1500] + "\n\n...[Nội dung đã được rút gọn để vừa ngữ cảnh]"
             return f"--- KẾT QUẢ CRAWL TỪ CRAWL4AI ({url}) ---\n{content}"
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ [Crawl4AI Skipped]: {e}")
 
-    # 2. Fallback: Requests với Browser Headers giả lập
+    # 2. Requests Fallback
+    logger.info(f"🔄 [crawl_web -> HTTP Fallback] GET '{url}'")
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
         }
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 403 or "Just a moment..." in response.text:
-            return (
-                f"⚠️ LỖI CRAWL WEB: Trang web '{url}' bị bảo vệ bởi Cloudflare WAF / Anti-Bot (Mã 403 Forbidden).\n"
-                f"Gợi ý: Hãy sử dụng API chính thức của trang web hoặc chạy với browser headless của Playwright."
-            )
+            logger.warning(f"⚠️ [HTTP Fallback WAF] Page '{url}' is Cloudflare protected (HTTP 403).")
+            return f"⚠️ LỖI CRAWL WEB: Trang web '{url}' bị bảo vệ bởi Cloudflare WAF (Mã 403 Forbidden)."
 
         response.raise_for_status()
 
@@ -330,9 +400,11 @@ def crawl_web(url: str, query: str = "") -> str:
         if len(clean_text) > 1500:
             clean_text = clean_text[:1500] + "\n\n...[Nội dung đã được rút gọn để vừa ngữ cảnh]"
 
+        logger.info(f"✅ [HTTP Fallback Success] Extracted {len(clean_text)} characters.")
         return f"--- KẾT QUẢ CRAWL TỪ HTTP REQUEST ({url}) ---\n{clean_text}"
 
     except Exception as err:
+        logger.error(f"❌ [HTTP Fallback Exception]: {err}", exc_info=True)
         return f"LỖI CRAWL WEB: Không thể truy cập URL '{url}'. Chi tiết: {str(err)}"
 
 
@@ -345,63 +417,24 @@ def find_houses(
 ) -> str:
     """
     Tìm kiếm và cào dữ liệu tin đăng bất động sản (mua bán hoặc cho thuê) từ Chợ Tốt / Nhà Tốt.
-    Tìm kiếm và cào dữ liệu tin đăng bất động sản (mua bán hoặc cho thuê) từ Chợ Tốt / Nhà Tốt.
-    
-    Args:
-        transaction_type (str): Nhu cầu giao dịch, nhận vào 'mua' (hoặc 'sale', 'ban') hoặc 'thue' (hoặc 'rent').
-        price_min (int, optional): Giá tối thiểu bằng VND. Mặc định là None.
-        price_max (int, optional): Giá tối đa bằng VND. Mặc định là None.
-        region (str, optional): Tỉnh/Thành phố (ví dụ: "Hồ Chí Minh", "Hà Nội", "Đà Nẵng"). Mặc định là None.
-        area (str, optional): Quận/Huyện/Khu vực cụ thể để lọc chi tiết (ví dụ: "Quận 3", "Cầu Giấy"). Mặc định là None.
     """
+    st_val, region_code, detected_area = resolve_location_and_transaction(transaction_type, region, area)
+    
+    logger.info(f"🛠️ [TOOL CALL: find_houses] st='{st_val}' ({'RENT' if st_val=='u' else 'SALE'}), region_code={region_code}, area='{detected_area}', price_range={price_min}-{price_max}")
+
     url = "https://gateway.chotot.com/v1/public/ad-listing"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
         "Referer": "https://www.chotot.com/"
     }
     
-    # 1. Map transaction_type to st
-    st_val = "s"
-    t_type = str(transaction_type).lower().strip()
-    if t_type in ["thue", "rent", "cho thue", "cho thuê", "thuê"]:
-        st_val = "u"
-    
-    # 2. Map region name to region_v2 code
-    region_map = {
-        "hồ chí minh": 13000,
-        "ho chi minh": 13000,
-        "tphcm": 13000,
-        "hcm": 13000,
-        "sài gòn": 13000,
-        "sai gon": 13000,
-        "hà nội": 12000,
-        "ha noi": 12000,
-        "hn": 12000,
-        "đà nẵng": 3000,
-        "da nang": 3000,
-        "cần thơ": 5027,
-        "can tho": 5027,
-        "bình dương": 1000,
-        "binh duong": 1000,
-        "đồng nai": 2000,
-        "dong nai": 2000
-    }
-    
-    region_code = None
-    if region:
-        reg_clean = str(region).lower().strip()
-        region_code = region_map.get(reg_clean)
-        
-    # 3. Build query parameters
     params = {
         "cg": 1000,
         "st": st_val,
-        "limit": 30
+        "limit": 30,
+        "region_v2": region_code
     }
     
-    if region_code:
-        params["region_v2"] = region_code
-        
     price_min_val = ""
     price_max_val = ""
     if price_min is not None:
@@ -418,19 +451,27 @@ def find_houses(
             
     if price_min_val or price_max_val:
         params["price"] = f"{price_min_val}-{price_max_val}"
+
+    logger.info(f"📡 [find_houses Request] GET {url} | Params: {params}")
         
     try:
         response = requests.get(url, params=params, headers=headers, timeout=12)
+        logger.info(f"📥 [find_houses Response] HTTP Status: {response.status_code}")
+        
         if response.status_code != 200:
+            logger.error(f"❌ [find_houses Error] HTTP {response.status_code} from Chotot API")
             return f"LỖI: Không thể lấy dữ liệu từ Chợ Tốt (HTTP {response.status_code})"
             
         data = response.json()
         ads = data.get("ads", [])
+        logger.info(f"📊 [find_houses] Received {len(ads)} raw ads from Chotot API. Applying client-side filters...")
+        
         if not ads:
+            logger.warning("⚠️ [find_houses] No ads returned from Chotot API.")
             return "Không tìm thấy bất động sản nào khớp với yêu cầu của bạn trên Chợ Tốt."
             
         filtered_ads = []
-        area_clean = str(area).lower().strip() if area else None
+        area_clean = str(detected_area).lower().strip() if detected_area else None
         
         for ad in ads:
             ad_price = ad.get("price")
@@ -445,20 +486,28 @@ def find_houses(
                 ward_name = str(ad.get("ward_name", "")).lower()
                 subject = str(ad.get("subject", "")).lower()
                 body = str(ad.get("body", "")).lower()
-                if (area_clean not in area_name and 
-                    area_clean not in ward_name and 
-                    area_clean not in subject and 
-                    area_clean not in body):
+                
+                matched = False
+                for target_str in [area_name, ward_name, subject, body]:
+                    if area_clean in target_str:
+                        matched = True
+                        break
+                if not matched:
                     continue
                     
             filtered_ads.append(ad)
             
+        logger.info(f"✅ [find_houses Success] Matched {len(filtered_ads)} ads for area='{detected_area}'.")
+        
+        # Fallback nếu lọc quá chặt làm mất kết quả -> Trả về danh sách raw ads hàng đầu
         if not filtered_ads:
-            return f"Tìm thấy tin đăng chung nhưng không có tin nào khớp cụ thể với khu vực '{area}'."
+            logger.warning(f"⚠️ [find_houses Fallback] No exact match for area '{detected_area}'. Returning top general listings in region.")
+            filtered_ads = ads
             
         results = []
         for idx, ad in enumerate(filtered_ads[:8]):
-            ad_id = ad.get("ad_id")
+            ad_id = ad.get("ad_id") or ad.get("list_id")
+            prop_code = f"AP-{ad_id}" if ad_id else f"AP-{idx+101}"
             subject = ad.get("subject", "Không có tiêu đề")
             price_str = ad.get("price_string", "Thỏa thuận")
             area_n = ad.get("area_name", "N/A")
@@ -468,38 +517,46 @@ def find_houses(
             
             loc_parts = [p for p in [ward_n, area_n, region_n] if p and p != "N/A"]
             location_str = ", ".join(loc_parts)
-            detail_url = f"https://www.nhatot.com/{ad_id}.htm"
+            
+            detail_url = f"https://www.nhatot.com/{ad_id}.htm" if ad_id else "https://www.nhatot.com"
+            img_thumb = ad.get("image") or ad.get("thumbnail_image") or ad.get("webp_image")
+            images_list = ad.get("images", [])
+            if not images_list and img_thumb:
+                images_list = [img_thumb]
             
             results.append({
                 "STT": idx + 1,
+                "Mã BĐS": prop_code,
+                "ad_id": str(ad_id) if ad_id else "",
                 "Tiêu đề": subject,
                 "Giá": price_str,
                 "Danh mục": category_n,
                 "Địa chỉ": location_str,
-                "Link chi tiết": detail_url
+                "Link chi tiết": detail_url,
+                "url": detail_url,
+                "images": images_list[:3]
             })
             
         return json.dumps(results, ensure_ascii=False, indent=2)
         
     except Exception as e:
+        logger.error(f"❌ [find_houses Exception]: {e}", exc_info=True)
         return f"LỖI: Gặp lỗi khi truy vấn dữ liệu bất động sản: {str(e)}"
 
 
 def rerank_houses(listings_json: str, preferences: str) -> str:
     """
     Sắp xếp lại danh sách bất động sản dựa trên mức độ phù hợp với sở thích của người dùng.
-    Sắp xếp lại danh sách bất động sản dựa trên mức độ phù hợp với sở thích của người dùng.
-    
-    Args:
-        listings_json (str): Chuỗi JSON danh sách bất động sản lấy từ find_houses.
-        preferences (str): Các tiêu chí chi tiết của người dùng (ví dụ: 'gần trường', 'máy giặt', 'ban công').
     """
+    logger.info(f"🛠️ [TOOL CALL: rerank_houses] Preferences='{preferences}'")
     try:
         ads = json.loads(listings_json)
-    except Exception:
+    except Exception as e:
+        logger.error(f"❌ [rerank_houses Error] Input is not valid JSON: {e}")
         return listings_json
         
     if not isinstance(ads, list):
+        logger.warning("⚠️ [rerank_houses Warning] Parsed JSON is not a list.")
         return listings_json
         
     pref_keywords = [k.strip().lower() for k in preferences.split(",") if k.strip()]
@@ -509,9 +566,9 @@ def rerank_houses(listings_json: str, preferences: str) -> str:
     scored_ads = []
     for ad in ads:
         score = 0
-        title = ad.get("Tiêu đề", "").lower()
-        address = ad.get("Địa chỉ", "").lower()
-        category = ad.get("Danh mục", "").lower()
+        title = str(ad.get("Tiêu đề", ad.get("title", ""))).lower()
+        address = str(ad.get("Địa chỉ", ad.get("address", ""))).lower()
+        category = str(ad.get("Danh mục", ad.get("description", ""))).lower()
         
         for kw in pref_keywords:
             if kw in title:
@@ -530,28 +587,69 @@ def rerank_houses(listings_json: str, preferences: str) -> str:
         ad["STT"] = idx + 1
         ad.pop("score", None)
         
+    logger.info(f"✅ [rerank_houses Success] Reranked {len(sorted_ads)} items using criteria: {pref_keywords}")
     return json.dumps(sorted_ads, ensure_ascii=False, indent=2)
 
 
 def contact_sales(
-    name: str,
-    email: str,
-    phone: str,
-    appointment_date: str,
-    house_title: str = "Bất động sản đã chọn"
+    property_id: str = "Bất động sản đã chọn",
+    customer_name: str = "Khách hàng",
+    customer_phone: str = "Chưa cung cấp",
+    appointment_date: str = "Thời gian thỏa thuận",
+    **kwargs
 ) -> str:
     """
-    Gửi thông báo đặt lịch hẹn xem nhà cho chuyên viên tư vấn bất động sản (Sales).
-    
-    Args:
-        name (str): Họ tên của khách hàng.
-        email (str): Email liên hệ của khách hàng.
-        phone (str): Số điện thoại liên hệ của khách hàng.
-        appointment_date (str): Ngày và giờ hẹn xem nhà (ví dụ: '10:00 ngày 29/07/2026').
-        house_title (str, optional): Tên hoặc tiêu đề bất động sản khách hàng quan tâm. Mặc định là 'Bất động sản đã chọn'.
+    Đặt lịch hẹn xem nhà cho khách hàng và trả về thông báo xác nhận đặt lịch thành công.
+    Yêu cầu thông tin khách hàng: Tên (customer_name) và Số điện thoại (customer_phone).
     """
-    # Trả về thông báo thành công ngắn gọn cho người dùng và Agent
-    return f"Đã gửi yêu cầu đặt lịch hẹn xem nhà '{house_title}' vào lúc {appointment_date} thành công đến chuyên viên tư vấn bất động sản!"
+    name = kwargs.get("name") or customer_name
+    phone = kwargs.get("phone") or customer_phone
+    date = kwargs.get("preferred_time") or kwargs.get("date") or appointment_date
+    prop = kwargs.get("house_title") or property_id
+
+    booking_id = f"BK-{int(time.time()) % 899999 + 100000}"
+    
+    logger.info(f"🛠️ [TOOL CALL: contact_sales] BookingID='{booking_id}', Name='{name}', Phone='{phone}', Date='{date}', Property='{prop}'")
+    
+    result_data = {
+        "status": "SUCCESS",
+        "message": f"✅ XÁC NHẬN ĐẶT LỊCH XEM NHÀ THÀNH CÔNG cho khách hàng {name} ({phone})!",
+        "booking_id": booking_id,
+        "customer_name": name,
+        "customer_phone": phone,
+        "property_id": prop,
+        "appointment_date": date,
+        "sales_contact": "Chuyên viên tư vấn bất động sản",
+        "note": "Thông tin đặt lịch đã được ghi nhận vào hệ thống. Tư vấn viên sẽ gọi xác nhận với bạn trước giờ hẹn."
+    }
+    
+    logger.info(f"✅ [contact_sales Success] Appointment booked for customer '{name}' ({phone}).")
+    return json.dumps(result_data, ensure_ascii=False, indent=2)
+
+
+def execute_tool(tool_name: str, **kwargs) -> str:
+    """
+    Hàm điều phối thực thi tool an toàn với logging chi tiết từng bước và đo thời gian thực thi.
+    """
+    logger.info(f"⚡ [EXECUTE TOOL START] Tool Name: '{tool_name}' | Arguments: {kwargs}")
+    
+    if tool_name not in AVAILABLE_TOOLS:
+        logger.error(f"❌ [EXECUTE TOOL ERROR] Tool '{tool_name}' is not registered! Available tools: {list(AVAILABLE_TOOLS.keys())}")
+        return f"LỖI: Công cụ '{tool_name}' không tồn tại trong hệ thống. Các công cụ khả dụng: {list(AVAILABLE_TOOLS.keys())}"
+    
+    func = AVAILABLE_TOOLS[tool_name]
+    start_time = time.time()
+    try:
+        result = func(**kwargs)
+        elapsed = (time.time() - start_time) * 1000
+        result_str = str(result)
+        logger.info(f"🏁 [EXECUTE TOOL SUCCESS] Tool '{tool_name}' completed in {elapsed:.2f}ms. Output length: {len(result_str)} chars.")
+        return result_str
+    except Exception as e:
+        elapsed = (time.time() - start_time) * 1000
+        logger.error(f"❌ [EXECUTE TOOL EXCEPTION] Tool '{tool_name}' failed after {elapsed:.2f}ms: {e}", exc_info=True)
+        return f"⚠️ LỖI KHI GỌI TOOL '{tool_name}': {str(e)}"
+
 
 # Danh sách các tool được đăng ký để Agent sử dụng
 AVAILABLE_TOOLS = {
@@ -559,6 +657,5 @@ AVAILABLE_TOOLS = {
     "find_houses": find_houses,
     "rerank_houses": rerank_houses,
     "rerank": rerank_houses,
-    "rerank_houses": rerank_houses,
     "contact_sales": contact_sales,
 }

@@ -3,7 +3,7 @@ import {
   Send, Bot, User, Brain, Wrench, Eye, CheckCircle2, 
   AlertTriangle, Copy, Check, Sparkles, ChevronDown, ChevronUp, RefreshCw, Layers, Calendar, MapPin, Star, Building
 } from 'lucide-react';
-import { processQuery } from '../utils/reactAgentSimulator';
+import { sendBaselineChat, sendReActChat } from '../services/api';
 import { TEST_CASES } from '../data/testCases';
 
 export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
@@ -44,11 +44,22 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
       content: userText
     };
 
+    // Chuẩn hóa lịch sử tin nhắn trước đó làm Memory Context cho Agent
+    const historyContext = messages
+      .filter(m => m.id !== 'welcome' && m.content)
+      .map(m => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.content
+      }));
+
     setMessages(prev => [...prev, userMsg]);
     setIsLoading(true);
 
     try {
-      const result = await processQuery(userText, mode, 3);
+      const result = mode === 'baseline' 
+        ? await sendBaselineChat(userText, null, historyContext)
+        : await sendReActChat(userText, null, historyContext);
+
       
       const botMsg = {
         id: (Date.now() + 1).toString(),
@@ -68,11 +79,12 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
         onNewTrace(result);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Error submitting chat:', err);
     } finally {
       setIsLoading(false);
     }
   };
+
 
   const handlePresetClick = (q) => {
     setInputQuery(q);
@@ -247,6 +259,10 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
                                   alt={prop.title}
                                   className="w-full h-full object-cover hover:scale-105 transition-transform duration-300" 
                                 />
+                                <div className="absolute top-2 left-2 bg-slate-900/85 backdrop-blur-xs text-white font-mono font-bold text-[10px] px-2 py-0.5 rounded-md shadow-xs border border-slate-700/50 flex items-center space-x-1">
+                                  <Building className="w-3 h-3 text-indigo-400 shrink-0" />
+                                  <span>Mã: {prop.propertyCode || prop.id}</span>
+                                </div>
                                 <div className="absolute top-2 right-2 bg-amber-400 text-amber-950 font-bold text-[10px] px-2 py-0.5 rounded-full flex items-center space-x-1 shadow-2xs">
                                   <Star className="w-3 h-3 fill-amber-950" />
                                   <span>{prop.rating}</span>
@@ -255,6 +271,12 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
 
                               {/* Card Content */}
                               <div className="p-3 space-y-1.5 text-xs">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded border border-indigo-200/80">
+                                    Mã BĐS: {prop.propertyCode || prop.id}
+                                  </span>
+                                </div>
+
                                 <h5 className="font-bold text-slate-900 line-clamp-1 leading-snug">
                                   {prop.title}
                                 </h5>
@@ -265,7 +287,11 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
                                 </div>
 
                                 <div className="flex items-center space-x-3 text-[11px] font-semibold text-slate-700 pt-1">
-                                  <span className="text-indigo-600 font-bold text-sm">{prop.price} tr/tháng</span>
+                                  <span className="text-indigo-600 font-bold text-sm">
+                                    {String(prop.price).includes('triệu') || String(prop.price).includes('VNĐ') || String(prop.price).includes('tháng')
+                                      ? prop.price 
+                                      : `${prop.price} tr/tháng`}
+                                  </span>
                                   <span>•</span>
                                   <span>{prop.area}</span>
                                   <span>•</span>
@@ -283,19 +309,66 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
                               </div>
                             </div>
 
-                            {/* Action Button */}
-                            <div className="p-3 pt-0">
-                              <button
-                                onClick={() => onOpenBookingForProperty && onOpenBookingForProperty(prop)}
-                                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold text-xs transition-all shadow-xs flex items-center justify-center space-x-1.5"
-                              >
-                                <Calendar className="w-3.5 h-3.5" />
-                                <span>📅 Đặt Lịch Xem Nhà</span>
-                              </button>
+                            {/* Action Buttons */}
+                            <div className="p-3 pt-0 flex">
+                              {prop.url && prop.url !== '#' ? (
+                                <a
+                                  href={prop.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="w-full py-2 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-bold text-xs transition-all flex items-center justify-center space-x-1.5 border border-indigo-200/80 shadow-2xs"
+                                >
+                                  <span>🔗 Xem chi tiết tin đăng</span>
+                                </a>
+                              ) : (
+                                <span className="w-full text-center text-[11px] text-slate-400 py-1 font-medium italic">
+                                  Tin đăng từ hệ thống
+                                </span>
+                              )}
                             </div>
 
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 📅 CLEAN IN-CHAT BOOKING CONFIRMATION CARD (Thông tin đặt lịch hiển thị trực quan UI) */}
+                  {isBot && msg.bookingResult && (
+                    <div className="mt-4 pt-4 border-t border-slate-200/80">
+                      <div className="bg-emerald-50/90 border border-emerald-200 rounded-xl p-4 space-y-3 shadow-2xs">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2 text-emerald-800 font-bold text-sm">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                            <span>XÁC NHẬN ĐẶT LỊCH XEM NHÀ THÀNH CÔNG</span>
+                          </div>
+                          <span className="bg-emerald-100 text-emerald-800 text-xs font-mono font-bold px-2.5 py-1 rounded-lg">
+                            {msg.bookingResult.booking_id}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-700 bg-white/70 p-3 rounded-lg border border-emerald-100/80">
+                          <div>
+                            <span className="text-slate-500 font-medium">Khách hàng:</span>{' '}
+                            <span className="font-bold text-slate-900">{msg.bookingResult.customer_name}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-medium">Số điện thoại:</span>{' '}
+                            <span className="font-bold text-slate-900">{msg.bookingResult.customer_phone}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-medium">Căn hộ/BĐS:</span>{' '}
+                            <span className="font-bold text-slate-900">{msg.bookingResult.property?.title || msg.bookingResult.property_id}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-medium">Thời gian hẹn:</span>{' '}
+                            <span className="font-bold text-emerald-700">{msg.bookingResult.scheduled_time}</span>
+                          </div>
+                        </div>
+
+                        <p className="text-[11px] text-emerald-700 italic">
+                          💡 Thông tin đặt lịch đã được tự động lưu vào Sổ Tay Lịch Hẹn. Tư vấn viên sẽ liên hệ xác nhận trước giờ hẹn.
+                        </p>
                       </div>
                     </div>
                   )}

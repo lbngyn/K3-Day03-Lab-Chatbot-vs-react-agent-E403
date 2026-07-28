@@ -4,20 +4,37 @@ File chính kết nối ReAct Agent, Tools, Prompts, Test Cases & FastAPI Web Se
 """
 
 import json
+import logging
 import os
 import sys
+import re
 from datetime import datetime
+
+from typing import Optional, List, Dict, Any, Tuple
 from dotenv import load_dotenv
 
 # Đảm bảo import các module cùng thư mục src/ hoạt động mượt mà
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Đảm bảo in ra Tiếng Việt và Emojis không bị lỗi trên Windows Console
-if sys.stdout.encoding != 'utf-8':
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
+
+# Cấu hình Logger cho Core Agent FastAPI Server
+logger = logging.getLogger("ReActAgentApp")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    console_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] [SERVER] %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +42,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 # Import các thành phần từ file của Role 2, Role 3 & Multi-Provider Adapter
-from tools import AVAILABLE_TOOLS, find_houses, rerank_houses, contact_sales
+from tools import AVAILABLE_TOOLS, execute_tool, crawl_web, find_houses, rerank_houses, contact_sales
 from prompts import CHATBOT_BASELINE_PROMPT, REACT_SYSTEM_PROMPT, MAX_ITERATIONS
 from providers import get_llm_provider
 
@@ -47,11 +64,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# In-memory store quản lý Bộ Nhớ Ngữ Cảnh (Conversation Memory) theo session_id
+MEMORY_STORE: Dict[str, List[Dict[str, str]]] = {}
+
 
 # Pydantic Schemas cho API Requests
 class ChatRequest(BaseModel):
-    query: str = Field(..., example="Thời tiết ở Hà Nội hôm nay thế nào?")
+    query: str = Field(..., example="Tìm phòng trọ ở Cầu Giấy dưới 8 triệu")
     provider_name: Optional[str] = Field(None, example="mock", description="gemini, openai, anthropic, openrouter, hoặc mock")
+    session_id: Optional[str] = Field("default_session", description="Mã phiên hội thoại để lưu nhớ context")
+    history: Optional[List[Dict[str, str]]] = Field(None, description="Danh sách lịch sử tin nhắn [{'role': 'user'|'assistant', 'content': '...'}]")
 
 
 class CrawlRequest(BaseModel):
@@ -78,132 +100,199 @@ def load_test_cases():
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_chat_log(user_query: str, agent_response: str, provider_name: str) -> str:
-    """Lưu một lượt hội thoại vào file JSONL để sử dụng lâu dài."""
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    log_dir = os.path.join(base_dir, "logs")
-    log_path = os.path.join(log_dir, "agent_chat.jsonl")
-    os.makedirs(log_dir, exist_ok=True)
 
-    log_entry = {
-        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "provider": provider_name,
-        "user_query": user_query,
-        "agent_response": agent_response,
-    }
-    with open(log_path, "a", encoding="utf-8") as log_file:
-        log_file.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-
-    return log_path
-
-
-def run_baseline_chatbot(user_query: str, provider):
+def parse_action_call(action_str: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
-    Chatbot tư vấn bất động sản cơ bản, không sử dụng công cụ.
+    Tách tên tool và dict tham số từ chuỗi Action dạng ReAct.
+    Tự động làm sạch escaped quotes (\") và outer quotes nếu LLM sinh raAction: find_houses("...")
     """
-    print(f"\n💬 [CHATBOT BASELINE] Câu hỏi: {user_query}")
+    action_str = action_str.strip()
+    match = re.search(r'([a-zA-Z0-9_]+)\s*[\[\(](.*?)[\]\)]', action_str, re.DOTALL)
+    if not match:
+        return None, {}
+    
+    tool_name = match.group(1).strip()
+    raw_args = match.group(2).strip()
+    
+    # 1. Làm sạch escaped quotes (\") và (')
+    raw_args = raw_args.replace('\\"', '"').replace("\\'", "'").strip()
+    
+    # 2. Tách bọc quotes ngoài nếu LLM truyền dạng find_houses("...")
+    if (raw_args.startswith('"') and raw_args.endswith('"')) or (raw_args.startswith("'") and raw_args.endswith("'")):
+        raw_args = raw_args[1:-1].strip()
+    
+    kwargs = {}
+    if not raw_args:
+        return tool_name, kwargs
 
-    system_prompt = CHATBOT_BASELINE_PROMPT
+    # Match key=value pairs
+    kv_pairs = re.findall(r'([a-zA-Z0-9_]+)\s*=\s*(?:["\'](.*?)["\']|([^\s,]+))', raw_args)
+    if kv_pairs:
+        for k, v1, v2 in kv_pairs:
+            val = v1 if v1 != '' else v2
+            val_str = str(val).strip().lower()
+            if val_str in ['null', 'none', 'undefined', '']:
+                continue
+            if str(val).isdigit():
+                val = int(val)
+            elif val_str == 'true':
+                val = True
+            elif val_str == 'false':
+                val = False
+            kwargs[k] = val
+        return tool_name, kwargs
 
-    response = provider.generate(user_query, system_prompt=system_prompt)
-    print(f"🤖 Chatbot trả lời:\n{response}")
-    return response
+    # Match positional string arguments
+    pos_args = re.findall(r'[\'"](.*?)[\'"]', raw_args)
+    if pos_args:
+        if tool_name == "crawl_web":
+            kwargs["url"] = pos_args[0]
+            if len(pos_args) > 1:
+                kwargs["query"] = pos_args[1]
+        elif tool_name == "get_weather":
+            kwargs["location"] = pos_args[0]
+        elif tool_name == "search_flights" and len(pos_args) >= 2:
+            kwargs["origin"] = pos_args[0]
+            kwargs["destination"] = pos_args[1]
+        elif tool_name == "find_houses":
+            kwargs["transaction_type"] = pos_args[0]
+            if len(pos_args) > 1:
+                kwargs["region"] = pos_args[1]
+            if len(pos_args) > 2:
+                kwargs["area"] = pos_args[2]
+        elif tool_name in ["rerank", "rerank_houses"]:
+            kwargs["listings_json"] = pos_args[0]
+            if len(pos_args) > 1:
+                kwargs["preferences"] = pos_args[1]
+        elif tool_name == "contact_sales":
+            if len(pos_args) >= 1:
+                kwargs["property_id"] = pos_args[0]
+            if len(pos_args) >= 2:
+                kwargs["customer_name"] = pos_args[1]
+            if len(pos_args) >= 3:
+                kwargs["customer_phone"] = pos_args[2]
+            if len(pos_args) >= 4:
+                kwargs["appointment_date"] = pos_args[3]
+        return tool_name, kwargs
 
-    # Logic điều hướng ReAct Agent
-    query_lower = user_query.lower()
+    return tool_name, kwargs
+
+
+def execute_react_loop(
+    user_query: str, 
+    provider, 
+    history: Optional[List[Dict[str, str]]] = None,
+    session_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Thực thi vòng lặp ReAct Agent kết hợp Bộ Nhớ Ngữ Cảnh (Conversation Memory).
+    """
+    sess_id = session_id or "default_session"
+    logger.info(f"🚀 === [REACT LOOP INIT] User Query: '{user_query}' | Session: '{sess_id}' | Provider: {provider.__class__.__name__} ===")
+    
+    # 1. Thu thập Context lịch sử hội thoại trước đó
+    past_context = ""
+    combined_history = history
+    if combined_history is None:
+        combined_history = MEMORY_STORE.get(sess_id, [])
+
+    if combined_history:
+        past_context = "=== LỊCH SỬ HỘI THOẠI TRƯỚC ĐÓ ===\n"
+        for msg in combined_history[-6:]:
+            role_label = "User" if msg.get("role") in ["user", "human"] else "Assistant"
+            content = msg.get("content", "")
+            past_context += f"{role_label}: {content}\n"
+        past_context += "=== KẾT THÚC LỊCH SỬ HỘI THOẠI ===\n\n"
+
+    conversation_history = f"{past_context}CÂU HỎI MỚI NHẤT CỦA NGƯỜI DÙNG:\nUser Query: {user_query}\n"
+
+    steps = []
+    step = 0
+    final_answer = ""
+    guardrail_triggered = False
 
     while step < MAX_ITERATIONS:
         step += 1
         current_step_info = {"step": step}
+        logger.info(f"🔄 --- [REACT STEP {step}/{MAX_ITERATIONS}] ---")
 
-        if "crawl" in query_lower or "http" in query_lower or "trang web" in query_lower:
-            # Tìm URL trong query
-            urls = re.findall(r'https?://[^\s]+', user_query)
-            target_url = urls[0] if urls else "https://example.com"
+        llm_prompt = f"{REACT_SYSTEM_PROMPT}\n\n{conversation_history}"
+        logger.info(f"🤖 [LLM Provider Execution] Invoking provider '{provider.__class__.__name__}'...")
+        
+        llm_res = provider.generate(llm_prompt)
+        logger.info(f"💬 [LLM Raw Response Snippet]: {llm_res[:250]}...")
 
-            if step == 1:
-                thought = f"Người dùng muốn thông tin từ trang web {target_url}. Tôi sẽ gọi tool crawl_web."
-                action = f"crawl_web['{target_url}']"
-                obs = crawl_web(target_url)
+        # 1. Nếu LLM sinh ra Final Answer
+        if "Final Answer:" in llm_res:
+            final_answer = llm_res.split("Final Answer:")[-1].strip()
+            thought_line = [line for line in llm_res.splitlines() if line.startswith("Thought:")]
+            thought = thought_line[0].replace("Thought:", "").strip() if thought_line else "Tôi đã có đủ thông tin để tổng hợp kết quả."
+            
+            logger.info(f"🧠 [Thought]: {thought}")
+            logger.info(f"🎯 [Final Answer]: {final_answer[:200]}...")
+            
+            current_step_info.update({"thought": thought, "final_answer": final_answer})
+            steps.append(current_step_info)
+            break
 
-                current_step_info.update({"thought": thought, "action": action, "observation": obs})
+        # 2. Nếu LLM sinh ra Action
+        elif "Action:" in llm_res:
+            action_line = [line for line in llm_res.splitlines() if line.startswith("Action:")][0]
+            action_str = action_line.replace("Action:", "").strip()
+            thought_lines = [line for line in llm_res.splitlines() if line.startswith("Thought:")]
+            thought = thought_lines[0].replace("Thought:", "").strip() if thought_lines else "LLM yêu cầu gọi công cụ."
+
+            tool_name, kwargs = parse_action_call(action_str)
+            logger.info(f"🧠 [Parsed Thought]: {thought}")
+            logger.info(f"🎬 [Parsed Action]: Tool='{tool_name}', Kwargs={kwargs}")
+
+            if tool_name and tool_name in AVAILABLE_TOOLS:
+                obs = execute_tool(tool_name, **kwargs)
+                logger.info(f"👁️ [Observation Result]: Retrieved {len(obs)} characters.")
+                
+                current_step_info.update({"thought": thought, "action": action_str, "observation": obs})
                 steps.append(current_step_info)
-
-            elif step == 2:
-                thought = "Tôi đã thu thập được nội dung từ trang web. Tôi sẽ tóm tắt kết quả cho người dùng."
-                prev_obs = steps[-1].get("observation", "")
-                final_answer = f"Dưới đây là tóm tắt nội dung từ {target_url}:\n\n{prev_obs[:500]}..."
-
-                current_step_info.update({"thought": thought, "final_answer": final_answer})
+                
+                conversation_history += f"Thought: {thought}\nAction: {action_str}\nObservation:\n{obs[:2000]}\n"
+            else:
+                obs = f"Lỗi: Công cụ '{tool_name}' không tồn tại trong hệ thống."
+                logger.error(f"❌ [Action Error]: {obs}")
+                current_step_info.update({"thought": thought, "action": action_str, "observation": obs})
                 steps.append(current_step_info)
-                break
-
-        elif "tìm nhà" in query_lower or "bất động sản" in query_lower or "mua nhà" in query_lower or "phongtro123" in query_lower or "phongtro" in query_lower or "phòng trọ" in query_lower or "nhà tốt" in query_lower or "nhatot" in query_lower:
-            urls = re.findall(r'https?://[^\s]+', user_query)
-            target_url = urls[0] if urls else ("https://phongtro123.com" if "phongtro" in query_lower or "phòng trọ" in query_lower else "https://www.nhatot.com/thue-bat-dong-san")
-
-            if step == 1:
-                if "chợ tốt" in query_lower or "chotot" in query_lower or "dưới" in query_lower or "từ" in query_lower:
-                    thought = f"Người dùng muốn tìm kiếm bất động sản thời gian thực. Tôi sẽ sử dụng công cụ find_houses."
-                    action = f"find_houses[transaction_type='thue', region='Hồ Chí Minh', area='Quận 3']"
-                    obs = find_houses("thue", region="Hồ Chí Minh", area="Quận 3" if "quận 3" in query_lower else None)
-                else:
-                    thought = f"Người dùng muốn tìm kiếm phòng trọ/bất động sản từ {target_url}. Tôi sẽ gọi tool crawl_web với từ khóa tìm kiếm."
-                    action = f"crawl_web['{target_url}', query='{user_query}']"
-                    obs = crawl_web(target_url, query=user_query)
-
-                current_step_info.update({"thought": thought, "action": action, "observation": obs})
-                steps.append(current_step_info)
-
-            elif step == 2:
-                if "ưu tiên" in query_lower or "sắp xếp" in query_lower or "gần" in query_lower:
-                    prev_obs = steps[-1].get("observation", "")
-                    thought = "Tôi sẽ sắp xếp (rerank) lại danh sách bất động sản dựa trên ưu tiên người dùng."
-                    action = f"rerank_houses[listings, preferences='gần trung tâm, máy lạnh']"
-                    obs = rerank_houses(prev_obs, "gần trung tâm, máy lạnh")
-                    current_step_info.update({"thought": thought, "action": action, "observation": obs})
-                    steps.append(current_step_info)
-                else:
-                    thought = "Tôi đã thu thập được danh sách phòng trọ/bất động sản. Tôi sẽ tổng hợp kết quả gửi tới người dùng."
-                    prev_obs = steps[-1].get("observation", "")
-                    final_answer = f"Dưới đây là danh sách kết quả tìm kiếm phòng trọ/bất động sản:\n\n{prev_obs}"
-                    current_step_info.update({"thought": thought, "final_answer": final_answer})
-                    steps.append(current_step_info)
-                    break
-
-            elif step == 3:
-                thought = "Tôi đã sắp xếp xong danh sách bất động sản. Tôi gửi kết quả cuối cùng cho người dùng."
-                prev_obs = steps[-1].get("observation", "")
-                final_answer = f"Dưới đây là danh sách bất động sản đã được sắp xếp theo tiêu chí ưu tiên:\n\n{prev_obs}"
-                current_step_info.update({"thought": thought, "final_answer": final_answer})
-                steps.append(current_step_info)
-                break
-
-
+                conversation_history += f"Thought: {thought}\nAction: {action_str}\nObservation: {obs}\n"
 
         else:
-            # Trường hợp hỏi đáp chung qua LLM Provider
-            llm_prompt = f"{REACT_SYSTEM_PROMPT}\n\nUser Query: {user_query}"
-            llm_res = provider.generate(llm_prompt)
             final_answer = llm_res
-            steps.append({
-                "step": step,
+            current_step_info.update({
                 "thought": "Xử lý câu hỏi trực tiếp qua LLM Provider.",
                 "final_answer": final_answer
             })
+            steps.append(current_step_info)
             break
 
     if step >= MAX_ITERATIONS and not final_answer:
         guardrail_triggered = True
+        logger.warning(f"🛡️ [GUARDRAIL TRIGGERED] Step count reached safe limit ({MAX_ITERATIONS}). Terminating loop.")
         final_answer = f"🛡️ GUARDRAIL TRIGGERED: Đã đạt giới hạn tối đa {MAX_ITERATIONS} bước ReAct lặp an toàn."
 
+    # 2. Lưu câu hỏi & phản hồi vào Memory Store
+    if sess_id not in MEMORY_STORE:
+        MEMORY_STORE[sess_id] = []
+    
+    MEMORY_STORE[sess_id].append({"role": "user", "content": user_query})
+    MEMORY_STORE[sess_id].append({"role": "assistant", "content": final_answer})
+
+    logger.info(f"🏁 === [REACT LOOP COMPLETE] Total steps: {step} | Memory count for '{sess_id}': {len(MEMORY_STORE[sess_id])} msgs ===")
+    
     return {
         "user_query": user_query,
+        "session_id": sess_id,
         "provider": provider.__class__.__name__,
         "steps_count": step,
         "guardrail_triggered": guardrail_triggered,
         "steps": steps,
-        "final_answer": final_answer
+        "final_answer": final_answer,
+        "history": MEMORY_STORE[sess_id]
     }
 
 
@@ -214,6 +303,7 @@ def run_baseline_chatbot(user_query: str, provider):
 @app.get("/")
 def read_root():
     """Trang chủ API & Thông tin hệ thống"""
+    logger.info("📡 [HTTP GET /] Root endpoint accessed.")
     return {
         "status": "success",
         "message": "🏫 ĐẠI HỌC VINUNI - REACT AGENT & FASTAPI SERVER IS RUNNING!",
@@ -224,6 +314,8 @@ def read_root():
             "get_test_cases": "GET /api/test-cases",
             "chat_baseline": "POST /api/chat/baseline",
             "chat_react": "POST /api/chat/react",
+            "get_memory": "GET /api/chat/memory/{session_id}",
+            "clear_memory": "DELETE /api/chat/memory/{session_id}",
             "crawl_web": "POST /api/crawl",
             "search_houses": "POST /api/search-houses"
         }
@@ -233,6 +325,7 @@ def read_root():
 @app.get("/api/tools")
 def get_tools_list():
     """Lấy danh sách tất cả các Tools được đăng ký"""
+    logger.info("📡 [HTTP GET /api/tools] Querying registered tools list.")
     tools_info = {}
     for name, func in AVAILABLE_TOOLS.items():
         tools_info[name] = {
@@ -245,16 +338,19 @@ def get_tools_list():
 @app.get("/api/test-cases")
 def get_test_cases_api():
     """Lấy bộ test cases từ config/test_cases.json"""
+    logger.info("📡 [HTTP GET /api/test-cases] Reading test cases config.")
     try:
         cases = load_test_cases()
         return {"test_cases_count": len(cases), "test_cases": cases}
     except Exception as e:
+        logger.error(f"❌ [HTTP GET /api/test-cases Error]: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/chat/baseline")
 def chat_baseline_endpoint(req: ChatRequest):
     """Gọi Chatbot Baseline không dùng Tools"""
+    logger.info(f"📡 [HTTP POST /api/chat/baseline] Query: '{req.query}' | Provider: '{req.provider_name}'")
     try:
         provider = get_llm_provider(req.provider_name)
         response = provider.generate(req.query, system_prompt=CHATBOT_BASELINE_PROMPT)
@@ -265,39 +361,66 @@ def chat_baseline_endpoint(req: ChatRequest):
             "response": response
         }
     except Exception as e:
+        logger.error(f"❌ [HTTP POST /api/chat/baseline Error]: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/chat/react")
 def chat_react_endpoint(req: ChatRequest):
-    """Gọi ReAct Agent với chuỗi suy luận Thought -> Action -> Observation"""
+    """Gọi ReAct Agent với chuỗi suy luận Thought -> Action -> Observation có lưu nhớ Context"""
+    logger.info(f"📡 [HTTP POST /api/chat/react] Query: '{req.query}' | Session: '{req.session_id}' | Provider: '{req.provider_name}'")
     try:
         provider = get_llm_provider(req.provider_name)
-        result = execute_react_loop(req.query, provider)
+        result = execute_react_loop(
+            user_query=req.query,
+            provider=provider,
+            history=req.history,
+            session_id=req.session_id
+        )
         return result
     except Exception as e:
+        logger.error(f"❌ [HTTP POST /api/chat/react Error]: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/chat/memory/{session_id}")
+def get_session_memory(session_id: str):
+    """Lấy lịch sử hội thoại của 1 session"""
+    history = MEMORY_STORE.get(session_id, [])
+    return {"session_id": session_id, "messages_count": len(history), "history": history}
+
+
+@app.delete("/api/chat/memory/{session_id}")
+def clear_session_memory(session_id: str):
+    """Xóa lịch sử bộ nhớ hội thoại của 1 session"""
+    if session_id in MEMORY_STORE:
+        del MEMORY_STORE[session_id]
+    return {"status": "success", "message": f"Đã xóa bộ nhớ session '{session_id}'"}
 
 
 @app.post("/api/crawl")
 def crawl_web_endpoint(req: CrawlRequest):
     """Gọi trực tiếp công cụ Crawl Web với bộ lọc tùy chọn (Crawl4AI / Requests)"""
+    logger.info(f"📡 [HTTP POST /api/crawl] URL: '{req.url}' | Filter query: '{req.query}'")
     try:
-        result = crawl_web(req.url, query=req.query or "")
+        result = execute_tool("crawl_web", url=req.url, query=req.query or "")
         return {
             "url": req.url,
             "filter_query": req.query,
             "result": result
         }
     except Exception as e:
+        logger.error(f"❌ [HTTP POST /api/crawl Error]: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/search-houses")
 def search_houses_endpoint(req: SearchHousesRequest):
     """Gọi trực tiếp công cụ Tìm kiếm Bất động sản Chợ Tốt / Nhà Tốt (find_houses)"""
+    logger.info(f"📡 [HTTP POST /api/search-houses] Params: {req.dict()}")
     try:
-        result = find_houses(
+        result = execute_tool(
+            "find_houses",
             transaction_type=req.transaction_type,
             price_min=req.price_min,
             price_max=req.price_max,
@@ -310,6 +433,7 @@ def search_houses_endpoint(req: SearchHousesRequest):
             "result": result
         }
     except Exception as e:
+        logger.error(f"❌ [HTTP POST /api/search-houses Error]: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

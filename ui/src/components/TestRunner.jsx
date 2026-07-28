@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Play, CheckCircle2, AlertTriangle, Clock, RefreshCw, Layers, ChevronRight, Check, X } from 'lucide-react';
-import { TEST_CASES } from '../data/testCases';
-import { processQuery } from '../utils/reactAgentSimulator';
+import { fetchTestCases, sendReActChat } from '../services/api';
 
 export default function TestRunner({ onNewTrace }) {
+  const [testCases, setTestCases] = useState([]);
   const [testResults, setTestResults] = useState({});
   const [isRunningAll, setIsRunningAll] = useState(false);
   const [runningId, setRunningId] = useState(null);
   const [selectedTestCase, setSelectedTestCase] = useState(null);
 
+  useEffect(() => {
+    async function loadCases() {
+      const cases = await fetchTestCases();
+      setTestCases(cases);
+    }
+    loadCases();
+  }, []);
+
   const runSingleTest = async (testCase) => {
     setRunningId(testCase.id);
     try {
-      const res = await processQuery(testCase.question, "react", 3);
+      const res = await sendReActChat(testCase.question);
       setTestResults(prev => ({
         ...prev,
         [testCase.id]: res
@@ -29,9 +37,10 @@ export default function TestRunner({ onNewTrace }) {
     setIsRunningAll(true);
     const newResults = {};
 
-    for (const tc of TEST_CASES) {
+    for (const tc of testCases) {
       setRunningId(tc.id);
-      const res = await processQuery(tc.question, "react", 3);
+      const res = await sendReActChat(tc.question);
+
       newResults[tc.id] = res;
       setTestResults({ ...newResults });
       if (onNewTrace) onNewTrace(res);
@@ -41,6 +50,7 @@ export default function TestRunner({ onNewTrace }) {
     setRunningId(null);
     setIsRunningAll(false);
   };
+
 
   // Metric summaries
   const totalExecuted = Object.keys(testResults).length;
@@ -72,12 +82,12 @@ export default function TestRunner({ onNewTrace }) {
           {isRunningAll ? (
             <>
               <RefreshCw className="w-4 h-4 animate-spin" />
-              <span>Đang chạy Suite ({totalExecuted}/5)...</span>
+              <span>Đang chạy Suite ({totalExecuted}/{testCases.length})...</span>
             </>
           ) : (
             <>
               <Play className="w-4 h-4 fill-white" />
-              <span>Run All 5 Test Cases</span>
+              <span>Run All {testCases.length} Test Cases</span>
             </>
           )}
         </button>
@@ -88,7 +98,7 @@ export default function TestRunner({ onNewTrace }) {
         
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Tổng Test Cases</div>
-          <div className="text-2xl font-bold text-slate-900 mt-1">{TEST_CASES.length} Cases</div>
+          <div className="text-2xl font-bold text-slate-900 mt-1">{testCases.length} Cases</div>
           <div className="text-[11px] text-slate-500 mt-0.5">Nạp từ test_cases.json</div>
         </div>
 
@@ -134,11 +144,12 @@ export default function TestRunner({ onNewTrace }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {TEST_CASES.map((tc) => {
+              {testCases.map((tc) => {
                 const result = testResults[tc.id];
                 const isRunningThis = runningId === tc.id;
 
                 return (
+
                   <tr key={tc.id} className="hover:bg-slate-50/80 transition-colors">
                     
                     {/* ID */}
