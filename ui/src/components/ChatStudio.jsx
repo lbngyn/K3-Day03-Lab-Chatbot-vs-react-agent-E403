@@ -221,7 +221,7 @@ export default function ChatStudio({ onNewTrace, onOpenBookingForProperty }) {
                   )}
 
                   {/* Clean User-Facing Text Response */}
-                  <div className="whitespace-pre-line text-slate-800 font-medium">
+                  <div className={`whitespace-pre-line font-medium ${isBot ? 'text-slate-800' : 'text-white'}`}>
                     {msg.content}
                   </div>
 
