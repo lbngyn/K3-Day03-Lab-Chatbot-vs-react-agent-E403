@@ -5,11 +5,8 @@ Nơi khai báo tất cả các "món đồ nghề" mà ReAct Agent có thể g�
 
 import asyncio
 import json
-<<<<<<< HEAD
 import re
 import requests
-=======
->>>>>>> b9286b5 (feat: implement book_houses tool with schedule conflict checks)
 from typing import Any
 from urllib.parse import urlparse, parse_qs, quote
 
@@ -612,11 +609,82 @@ def book_houses(name: str, phone: str, house_title: str, appointment_date: str) 
         return f"LỖI: Gặp lỗi khi lưu lịch hẹn xem nhà: {str(e)}"
         
     return f"ĐỒNG Ý: Đặt lịch xem nhà thành công cho căn '{house_title}' vào lúc {appointment_date} cho {name} ({phone})!"
+
+def update_booking(
+    phone: str,
+    house_title: str,
+    new_name: str = None,
+    new_phone: str = None,
+    new_appointment_date: str = None
+) -> str:
+    """
+    Cập nhật thông tin lịch hẹn xem nhà đã đặt của khách hàng.
+    
+    Args:
+        phone (str): Số điện thoại của lịch hẹn cần cập nhật (bắt buộc để định danh).
+        house_title (str): Tiêu đề căn nhà muốn xem (bắt buộc để định danh).
+        new_name (str, optional): Họ tên mới cần cập nhật. Mặc định là None.
+        new_phone (str, optional): Số điện thoại mới cần cập nhật. Mặc định là None.
+        new_appointment_date (str, optional): Khung giờ hẹn mới cần cập nhật. Mặc định là None.
+    """
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bookings.json")
+    
+    if not os.path.exists(db_path):
+        return "LỖI: Chưa có dữ liệu lịch hẹn nào trong hệ thống!"
+        
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            bookings = json.load(f)
+    except Exception as e:
+        return f"LỖI: Không thể đọc cơ sở dữ liệu lịch hẹn: {str(e)}"
+        
+    # Tìm lịch hẹn cần cập nhật
+    target_idx = -1
+    phone_clean = phone.strip().lower()
+    house_clean = house_title.strip().lower()
+    
+    for idx, b in enumerate(bookings):
+        if b.get("phone", "").strip().lower() == phone_clean and house_clean in b.get("house", "").strip().lower():
+            target_idx = idx
+            break
+            
+    if target_idx == -1:
+        return f"LỖI: Không tìm thấy lịch hẹn nào của khách hàng có số điện thoại '{phone}' cho căn '{house_title}'!"
+        
+    booking_to_update = bookings[target_idx]
+    
+    # Nếu cập nhật khung giờ mới, kiểm tra trùng lặp với lịch bận khác
+    if new_appointment_date:
+        new_time_clean = new_appointment_date.strip().lower()
+        for idx, b in enumerate(bookings):
+            if idx != target_idx and b.get("time", "").strip().lower() == new_time_clean:
+                return (
+                    f"LỖI: Khung giờ mới '{new_appointment_date}' đã bị kẹt bởi một khách hàng khác "
+                    f"xem căn '{b.get('house')}'. Vui lòng chọn giờ khác!"
+                )
+        booking_to_update["time"] = new_appointment_date
+        
+    if new_name:
+        booking_to_update["name"] = new_name
+        
+    if new_phone:
+        booking_to_update["phone"] = new_phone
+        
+    # Lưu lại vào file JSON
+    try:
+        with open(db_path, "w", encoding="utf-8") as f:
+            json.dump(bookings, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        return f"LỖI: Gặp lỗi khi lưu lịch hẹn cập nhật: {str(e)}"
+        
+    return f"ĐỒNG Ý: Đã cập nhật thành công lịch hẹn xem căn '{house_title}'! Thông tin mới: Tên: {booking_to_update.get('name')}, SĐT: {booking_to_update.get('phone')}, Giờ: {booking_to_update.get('time')}."
+
 AVAILABLE_TOOLS = {
     "crawl_web": crawl_web,
     "find_houses": find_houses,
     "rerank_houses": rerank_houses,
     "rerank": rerank_houses,
     "contact_sales": contact_sales,
-    "book_houses": book_houses
+    "book_houses": book_houses,
+    "update_booking": update_booking
 }
